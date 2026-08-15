@@ -58,12 +58,12 @@ function resetFailure(id) {
   db.prepare('UPDATE ai_keys SET fail_count = 0 WHERE id = ?').run(id);
 }
 
-function buildSystemPrompt() {
-  const knowledge = db.prepare('SELECT content FROM ai_knowledge ORDER BY id ASC').all();
-  const knowledgeText = knowledge.map((k) => `- ${k.content}`).join('\n');
+function buildSystemPrompt(knowledgeList = []) {
+  const knowledgeText = knowledgeList.map((k) => `- ${k}`).join('\n');
   return (
-    `Sen Telegram bot uchun ishlayotgan yordamchi AI'san. ` +
-    `Foydalanuvchi savoliga o'zbek tilida, qisqa, samimiy va aniq javob ber. ` +
+    `Sen odamning shaxsiy Telegram akkounti nomidan, u band/oflayn bo'lganda ` +
+    `unga yozganlarga o'rniga javob beryapsan. O'zbek tilida, qisqa, samimiy va tabiiy javob ber, ` +
+    `xuddi shu odamning o'zi yozayotgandek. ` +
     (knowledgeText
       ? `\n\nQuyidagi ma'lumotlarga tayanib javob ber (agar savol shu bilan bog'liq bo'lsa):\n${knowledgeText}`
       : '')
@@ -72,10 +72,11 @@ function buildSystemPrompt() {
 
 /**
  * 20 ta kalit orasidan navbat bilan urinib, AI javobini qaytaradi.
+ * knowledgeList - shu foydalanuvchining o'z bilim bazasidagi matnlar ro'yxati.
  * Barcha kalitlar ishlamasa, null qaytaradi.
  */
-async function getAIReply(userText) {
-  const systemPrompt = buildSystemPrompt();
+async function getAIReply(userText, knowledgeList = []) {
+  const systemPrompt = buildSystemPrompt(knowledgeList);
   const keys = getOrderedActiveKeys();
 
   for (const key of keys) {

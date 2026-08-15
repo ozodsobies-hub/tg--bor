@@ -1,0 +1,342 @@
+const { Telegraf, Markup } = require('telegraf');
+const { db, getSetting } = require('../db');
+const { toPremiumHTML } = require('../utils/premiumEmoji');
+const loginSession = require('../userbot/session');
+const userbotManager = require('../userbot/userbotManager');
+const { getAIReply } = require('../utils/aiRotation');
+
+let bot = null;
+let botInfo = null;
+
+// chatId -> { state, ... } - vaqtinchalik navigatsiya holati
+const nav = new Map();
+
+function getOrCreateUser(telegramId, username) {
+  let user = db.prepare('SELECT * FROM users WHERE telegram_id = ?').get(String(telegramId));
+  if (!user) {
+    db.prepare('INSERT INTO users (telegram_id, telegram_username) VALUES (?,?)').run(
+      String(telegramId),
+      username || ''
+    );
+    user = db.prepare('SELECT * FROM users WHERE telegram_id = ?').get(String(telegramId));
+  }
+  return user;
+}
+
+function mainKeyboard(connected) {
+  if (connected) {
+    return Markup.keyboard([
+      ['⚙️ Avto javob boshqaruvi'],
+      ["🔌 Akkountni uzish", 'ℹ️ Bot haqida'],
+    ]).resize();
+  }
+  return Markup.keyboard([['🔗 Akkountni ulash'], ['ℹ️ Bot haqida']]).resize();
+}
+
+function autoreplyKeyboard() {
+  return Markup.keyboard([
+    ["📝 Ma'lumot kiritish"],
+    ["🔴 Butunlay o'chirish", "🟡 Vaqtincha o'chirish"],
+    ["🔄 Qayta ishga tushirish"],
+    ["🧠 AI bilan suhbat", "🔛 AI yoqish/o'chirish"],
+    ["📚 AI ga ma'lumot kiritish"],
+    ['🕒 Oflayn sozlamalari'],
+    ['⬅️ Orqaga'],
+  ]).resize();
+}
+
+async function send(ctx, text, extra = {}) {
+  return ctx.reply(toPremiumHTML(text), { parse_mode: 'HTML', ...extra });
+}
+
+function statusSummary(user) {
+  const statusText =
+    user.autoreply_status === 'on'
+      ? '🟢 Yoqilgan'
+      : user.autoreply_status === 'off_temp'
+      ? "🟡 Vaqtincha o'chirilgan"
+      : "🔴 Butunlay o'chirilgan";
+  const awayText =
+    user.away_mode === 'always' ? 'Doim yoqilgan' : `Faqat ${user.away_timeout_minutes} daqiqa jimlikdan keyin`;
+  return `⚙️ Avto javob boshqaruvi\n\nHolat: ${statusText}\nAI: ${
+    user.ai_enabled ? '🟢 Yoqilgan' : "🔴 O'chirilgan"
+  }\nOflayn rejimi: ${awayText}`;
+}
+
+function setupHandlers(instance) {
+  instance.start(async (ctx) => {
+    const user = getOrCreateUser(ctx.from.id, ctx.from.username);
+    nav.delete(ctx.chat.id);
+    const connected = !!user.session_string;
+    await send(
+      ctx,
+      "👋 Assalomu alaykum! Bu bot sizning shaxsiy Telegram akkountingiz uchun AI avto-javob xizmatini sozlashga yordam beradi.\n\n💤 Siz band yoki oflayn bo'lganingizda, sizga yozganlarga akkountingiz nomidan avtomatik, premium emoji bilan javob beriladi.",
+      mainKeyboard(connected)
+    );
+  });
+
+  instance.hears('ℹ️ Bot haqida', async (ctx) => {
+    await send(
+      ctx,
+      "🤖 Bu bot orqali:\n\n1️⃣ '🔗 Akkountni ulash' orqali telefon raqamingiz bilan shaxsiy akkountingizni ulaysiz\n2️⃣ Avto-javob qoidalari va AI'ni sozlaysiz\n3️⃣ Band/oflayn bo'lganingizda sizga yozganlarga akkountingiz nomidan avtomatik javob beriladi ✨"
+    );
+  });
+
+  instance.hears('🔗 Akkountni ulash', async (ctx) => {
+    const user = getOrCreateUser(ctx.from.id, ctx.from.username);
+    nav.set(ctx.chat.id, { state: 'awaiting_phone', userId: user.id });
+    await send(ctx, '📱 Telefon raqamingizni xalqaro formatda yuboring (masalan: +998901234567):');
+  });
+
+  instance.hears('🔌 Akkountni uzish', async (ctx) => {
+    const user = getOrCreateUser(ctx.from.id, ctx.from.username);
+    await userbotManager.stopInstance(user.id, true);
+    db.prepare("UPDATE users SET session_string = '' WHERE id = ?").run(user.id);
+    nav.delete(ctx.chat.id);
+    await send(ctx, '🔌 Akkount uzildi. Xohlasangiz qaytadan ulashingiz mumkin.', mainKeyboard(false));
+  });
+
+  instance.hears('⚙️ Avto javob boshqaruvi', async (ctx) => {
+    const user = getOrCreateUser(ctx.from.id, ctx.from.username);
+    if (!user.session_string) {
+      await send(ctx, "❗ Avval akkountingizni ulang: '🔗 Akkountni ulash'");
+      return;
+    }
+    nav.set(ctx.chat.id, { state: 'autoreply_menu', userId: user.id });
+    await send(ctx, statusSummary(user), autoreplyKeyboard());
+  });
+
+  instance.hears('⬅️ Orqaga', async (ctx) => {
+    const user = getOrCreateUser(ctx.from.id, ctx.from.username);
+    nav.delete(ctx.chat.id);
+    await send(ctx, '⬅️ Bosh menyu', mainKeyboard(!!user.session_string));
+  });
+
+  instance.hears("📝 Ma'lumot kiritish", async (ctx) => {
+    const user = getOrCreateUser(ctx.from.id, ctx.from.username);
+    nav.set(ctx.chat.id, { state: 'awaiting_rule', userId: user.id });
+    await send(
+      ctx,
+      "📝 SO'ROV | JAVOB formatida yuboring.\n\nMisol:\nnarx | Narxlar haqida hozir band bo'lishim mumkin, tez orada javob beraman 🙏"
+    );
+  });
+
+  instance.hears("🔴 Butunlay o'chirish", async (ctx) => {
+    const user = getOrCreateUser(ctx.from.id, ctx.from.username);
+    db.prepare("UPDATE users SET autoreply_status='off_permanent' WHERE id=?").run(user.id);
+    await userbotManager.stopInstance(user.id, false);
+    await send(ctx, "🔴 Avto javob butunlay o'chirildi.");
+  });
+
+  instance.hears("🟡 Vaqtincha o'chirish", async (ctx) => {
+    const user = getOrCreateUser(ctx.from.id, ctx.from.username);
+    db.prepare("UPDATE users SET autoreply_status='off_temp' WHERE id=?").run(user.id);
+    await send(ctx, "🟡 Avto javob vaqtincha o'chirildi.");
+  });
+
+  instance.hears("🔄 Qayta ishga tushirish", async (ctx) => {
+    const user = getOrCreateUser(ctx.from.id, ctx.from.username);
+    db.prepare("UPDATE users SET autoreply_status='on' WHERE id=?").run(user.id);
+    const result = await userbotManager.reloadInstance(user.id);
+    await send(ctx, result.ok ? '🔄 Avto javob qayta ishga tushirildi.' : `⚠️ ${result.error}`);
+  });
+
+  instance.hears("🔛 AI yoqish/o'chirish", async (ctx) => {
+    const user = getOrCreateUser(ctx.from.id, ctx.from.username);
+    const newVal = user.ai_enabled ? 0 : 1;
+    db.prepare('UPDATE users SET ai_enabled=? WHERE id=?').run(newVal, user.id);
+    await send(ctx, newVal ? '🟢 AI yoqildi.' : "🔴 AI o'chirildi.");
+  });
+
+  instance.hears("📚 AI ga ma'lumot kiritish", async (ctx) => {
+    const user = getOrCreateUser(ctx.from.id, ctx.from.username);
+    nav.set(ctx.chat.id, { state: 'awaiting_knowledge', userId: user.id });
+    await send(ctx, "📚 AI uchun ma'lumot yuboring (masalan: \"Ismim Aziz\", \"Ish vaqtim 9:00-18:00\"):");
+  });
+
+  instance.hears('🧠 AI bilan suhbat', async (ctx) => {
+    const user = getOrCreateUser(ctx.from.id, ctx.from.username);
+    nav.set(ctx.chat.id, { state: 'ai_chat_mode', userId: user.id });
+    await send(ctx, '🧠 AI bilan suhbat rejimi. Xabar yozing. Chiqish uchun "⬅️ Orqaga".');
+  });
+
+  instance.hears('🕒 Oflayn sozlamalari', async (ctx) => {
+    const user = getOrCreateUser(ctx.from.id, ctx.from.username);
+    nav.set(ctx.chat.id, { state: 'away_settings', userId: user.id });
+    await send(
+      ctx,
+      '🕒 Qachon avto-javob berilsin?\n\n1 — Doim yoqilgan\n2 — Faqat men oflayn (jim) bo\'lganimda\n\nRaqam bilan javob bering (1 yoki 2).'
+    );
+  });
+
+  instance.on('text', async (ctx) => {
+    const chatId = ctx.chat.id;
+    const text = ctx.message.text;
+    const user = getOrCreateUser(ctx.from.id, ctx.from.username);
+    const navState = nav.get(chatId);
+    const state = navState?.state;
+
+    if (state === 'awaiting_phone') {
+      try {
+        await loginSession.sendCode(user.id, text.trim());
+        nav.set(chatId, { state: 'awaiting_code', userId: user.id });
+        await send(ctx, '✅ Kod yuborildi. Telegramga kelgan kodni kiriting:');
+      } catch (err) {
+        await send(ctx, '❌ Xato: ' + err.message);
+      }
+      return;
+    }
+
+    if (state === 'awaiting_code') {
+      try {
+        const result = await loginSession.verifyCode(user.id, text.trim());
+        if (result.needPassword) {
+          nav.set(chatId, { state: 'awaiting_password', userId: user.id });
+          await send(ctx, '🔐 Ikki bosqichli (2FA) parolingizni kiriting:');
+        } else {
+          db.prepare('UPDATE users SET session_string=? WHERE id=?').run(result.sessionString, user.id);
+          await userbotManager.startInstance(user.id, result.client);
+          nav.delete(chatId);
+          await send(ctx, '✅ Akkount muvaffaqiyatli ulandi!', mainKeyboard(true));
+        }
+      } catch (err) {
+        await send(ctx, '❌ Xato: ' + err.message);
+      }
+      return;
+    }
+
+    if (state === 'awaiting_password') {
+      try {
+        const result = await loginSession.verifyPassword(user.id, text.trim());
+        db.prepare('UPDATE users SET session_string=? WHERE id=?').run(result.sessionString, user.id);
+        await userbotManager.startInstance(user.id, result.client);
+        nav.delete(chatId);
+        await send(ctx, '✅ Akkount muvaffaqiyatli ulandi!', mainKeyboard(true));
+      } catch (err) {
+        await send(ctx, '❌ Xato: ' + err.message);
+      }
+      return;
+    }
+
+    if (state === 'awaiting_rule') {
+      const parts = text.split('|');
+      if (parts.length < 2) {
+        await send(ctx, "❗ Format xato. Iltimos: SO'ROV | JAVOB shaklida yuboring.");
+        return;
+      }
+      const trigger = parts[0].trim();
+      const response = parts.slice(1).join('|').trim();
+      db.prepare(
+        'INSERT INTO autoreply_rules (user_id, match_type, trigger_text, response_text) VALUES (?,?,?,?)'
+      ).run(user.id, 'contains', trigger, response);
+      nav.set(chatId, { state: 'autoreply_menu', userId: user.id });
+      await send(ctx, `✅ Qoida qo'shildi:\n"${trigger}" ➔ "${response}"`, autoreplyKeyboard());
+      return;
+    }
+
+    if (state === 'awaiting_knowledge') {
+      db.prepare('INSERT INTO ai_knowledge (user_id, content) VALUES (?,?)').run(user.id, text);
+      nav.set(chatId, { state: 'autoreply_menu', userId: user.id });
+      await send(ctx, "✅ Ma'lumot AI bazasiga qo'shildi.", autoreplyKeyboard());
+      return;
+    }
+
+    if (state === 'away_settings') {
+      if (text.trim() === '1') {
+        db.prepare("UPDATE users SET away_mode='always' WHERE id=?").run(user.id);
+        nav.set(chatId, { state: 'autoreply_menu', userId: user.id });
+        await send(ctx, '✅ Doim yoqilgan rejimi tanlandi.', autoreplyKeyboard());
+      } else if (text.trim() === '2') {
+        nav.set(chatId, { state: 'away_timeout_input', userId: user.id });
+        await send(ctx, "Necha daqiqadan keyin oflayn hisoblansin? (raqam kiriting, masalan 5)");
+      } else {
+        await send(ctx, 'Iltimos 1 yoki 2 raqamini kiriting.');
+      }
+      return;
+    }
+
+    if (state === 'away_timeout_input') {
+      const minutes = parseInt(text.trim(), 10);
+      if (!minutes || minutes < 1) {
+        await send(ctx, "Iltimos to'g'ri raqam kiriting (masalan 5).");
+        return;
+      }
+      db.prepare("UPDATE users SET away_mode='when_offline', away_timeout_minutes=? WHERE id=?").run(
+        minutes,
+        user.id
+      );
+      nav.set(chatId, { state: 'autoreply_menu', userId: user.id });
+      await send(ctx, `✅ Saqlandi: ${minutes} daqiqa jimlikdan keyin oflayn hisoblanadi.`, autoreplyKeyboard());
+      return;
+    }
+
+    if (state === 'ai_chat_mode') {
+      const knowledge = db
+        .prepare('SELECT content FROM ai_knowledge WHERE user_id=?')
+        .all(user.id)
+        .map((k) => k.content);
+      const reply = await getAIReply(text, knowledge);
+      await send(ctx, reply || '⚠️ AI javob bera olmadi (kalitlar tugagan yoki xato).');
+      return;
+    }
+
+    // Boshqa holatlarda hech narsa qilmaymiz - bu control botning o'z chati,
+    // avto-javob mantiqi shaxsiy akkountlarga tegishli (userbotManager orqali).
+  });
+}
+
+async function setWebhook() {
+  const publicUrl = process.env.PUBLIC_URL;
+  const secret = getSetting('control_bot_webhook_secret');
+  if (!publicUrl) {
+    console.warn("⚠️ PUBLIC_URL environment o'zgaruvchisi yo'q, webhook o'rnatilmadi.");
+    return;
+  }
+  await bot.telegram.setWebhook(`${publicUrl}/webhook/${secret}`);
+  console.log('✅ Control bot webhook o\'rnatildi:', `${publicUrl}/webhook/${secret}`);
+}
+
+async function initBot() {
+  const token = getSetting('control_bot_token', '');
+  if (!token) {
+    console.warn("⚠️ control_bot_token sozlanmagan. Admin panel orqali kiriting.");
+    return;
+  }
+  bot = new Telegraf(token);
+  setupHandlers(bot);
+  try {
+    botInfo = await bot.telegram.getMe();
+  } catch (err) {
+    console.error('❌ Control bot tokeni yaroqsiz:', err.message);
+    bot = null;
+    return;
+  }
+  await setWebhook();
+}
+
+async function handleUpdate(secret, update) {
+  const currentSecret = getSetting('control_bot_webhook_secret');
+  if (secret !== currentSecret || !bot) return false;
+  await bot.handleUpdate(update);
+  return true;
+}
+
+async function reloadBot() {
+  if (bot) {
+    try {
+      await bot.telegram.deleteWebhook();
+    } catch (e) {
+      /* ignore */
+    }
+  }
+  bot = null;
+  botInfo = null;
+  await initBot();
+  return getStatus();
+}
+
+function getStatus() {
+  return { running: !!bot, username: botInfo?.username || null };
+}
+
+module.exports = { initBot, reloadBot, handleUpdate, getStatus };

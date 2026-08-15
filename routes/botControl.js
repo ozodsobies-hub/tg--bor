@@ -1,27 +1,16 @@
 const express = require('express');
 const authMiddleware = require('../middleware/authMiddleware');
-const botManager = require('../bot/botManager');
+const controlBot = require('../controlBot/manager');
 
 const router = express.Router();
 
+// Bu endi MARKAZIY (control) botning holati - ko'p foydalanuvchili "eshik" bot.
 router.get('/status', authMiddleware, (req, res) => {
-  res.json(botManager.getStatus());
+  res.json(controlBot.getStatus());
 });
 
 router.post('/reload', authMiddleware, async (req, res) => {
-  res.json(await botManager.reloadBot());
-});
-
-router.post('/stop-permanent', authMiddleware, async (req, res) => {
-  res.json(await botManager.stopBotPermanent());
-});
-
-router.post('/stop-temp', authMiddleware, async (req, res) => {
-  res.json(await botManager.stopBotTemp());
-});
-
-router.post('/start', authMiddleware, async (req, res) => {
-  res.json(await botManager.startBot());
+  res.json(await controlBot.reloadBot());
 });
 
 module.exports = router;

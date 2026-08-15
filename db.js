@@ -12,11 +12,46 @@ const db = new Database(DB_PATH);
 db.pragma('journal_mode = WAL');
 
 db.exec(`
+-- Global sozlamalar (super-admin, control bot tokeni, MTProto app credentials)
 CREATE TABLE IF NOT EXISTS settings (
   key TEXT PRIMARY KEY,
   value TEXT
 );
 
+-- Har bir yakuniy foydalanuvchi (bot orqali /start bosgan va akkountini ulagan kishi)
+CREATE TABLE IF NOT EXISTS users (
+  id INTEGER PRIMARY KEY AUTOINCREMENT,
+  telegram_id TEXT UNIQUE NOT NULL,      -- control botga /start bosgan odamning Telegram ID'si
+  telegram_username TEXT,
+  phone_number TEXT,
+  session_string TEXT DEFAULT '',        -- MTProto sessiya (shaxsiy akkountga kirish)
+  away_mode TEXT DEFAULT 'when_offline', -- 'always' | 'when_offline'
+  away_timeout_minutes INTEGER DEFAULT 5,
+  autoreply_status TEXT DEFAULT 'on',    -- 'on' | 'off_temp' | 'off_permanent'
+  ai_enabled INTEGER DEFAULT 0,
+  created_at TEXT DEFAULT CURRENT_TIMESTAMP
+);
+
+-- Har bir foydalanuvchining o'z avto-javob qoidalari
+CREATE TABLE IF NOT EXISTS autoreply_rules (
+  id INTEGER PRIMARY KEY AUTOINCREMENT,
+  user_id INTEGER NOT NULL REFERENCES users(id) ON DELETE CASCADE,
+  match_type TEXT NOT NULL DEFAULT 'contains', -- 'exact' | 'contains'
+  trigger_text TEXT NOT NULL,
+  response_text TEXT NOT NULL,
+  active INTEGER DEFAULT 1,
+  created_at TEXT DEFAULT CURRENT_TIMESTAMP
+);
+
+-- Har bir foydalanuvchining o'z AI bilim bazasi
+CREATE TABLE IF NOT EXISTS ai_knowledge (
+  id INTEGER PRIMARY KEY AUTOINCREMENT,
+  user_id INTEGER NOT NULL REFERENCES users(id) ON DELETE CASCADE,
+  content TEXT NOT NULL,
+  created_at TEXT DEFAULT CURRENT_TIMESTAMP
+);
+
+-- Umumiy (butun tizim uchun bitta) AI kalitlar hovuzi - 20 slot
 CREATE TABLE IF NOT EXISTS ai_keys (
   id INTEGER PRIMARY KEY AUTOINCREMENT,
   provider TEXT NOT NULL,       -- 'openrouter' | 'gemini'
@@ -25,21 +60,6 @@ CREATE TABLE IF NOT EXISTS ai_keys (
   is_primary INTEGER DEFAULT 0, -- 1 = asosiy (3 tasi), 0 = zaxira
   active INTEGER DEFAULT 1,
   fail_count INTEGER DEFAULT 0,
-  created_at TEXT DEFAULT CURRENT_TIMESTAMP
-);
-
-CREATE TABLE IF NOT EXISTS autoreply_rules (
-  id INTEGER PRIMARY KEY AUTOINCREMENT,
-  match_type TEXT NOT NULL DEFAULT 'contains', -- 'exact' | 'contains'
-  trigger_text TEXT NOT NULL,
-  response_text TEXT NOT NULL,
-  active INTEGER DEFAULT 1,
-  created_at TEXT DEFAULT CURRENT_TIMESTAMP
-);
-
-CREATE TABLE IF NOT EXISTS ai_knowledge (
-  id INTEGER PRIMARY KEY AUTOINCREMENT,
-  content TEXT NOT NULL,
   created_at TEXT DEFAULT CURRENT_TIMESTAMP
 );
 `);
@@ -62,33 +82,22 @@ function getAllSettings() {
   return out;
 }
 
-// Default sozlamalarni bir marta o'rnatish
 function initDefaults() {
-  if (getSetting('admin_username') === null) {
-    setSetting('admin_username', 'admin123');
-  }
+  if (getSetting('admin_username') === null) setSetting('admin_username', 'admin123');
   if (getSetting('admin_password_hash') === null) {
-    const hash = bcrypt.hashSync('adminparol', 10);
-    setSetting('admin_password_hash', hash);
+    setSetting('admin_password_hash', bcrypt.hashSync('adminparol', 10));
   }
   if (getSetting('jwt_secret') === null) {
     setSetting('jwt_secret', require('crypto').randomBytes(32).toString('hex'));
   }
-  if (getSetting('autoreply_status') === null) {
-    setSetting('autoreply_status', 'on'); // on | off_temp | off_permanent
+  // Markaziy (control) bot - BotFather'dan olinadi, ko'p foydalanuvchili "eshik"
+  if (getSetting('control_bot_token') === null) setSetting('control_bot_token', '');
+  if (getSetting('control_bot_webhook_secret') === null) {
+    setSetting('control_bot_webhook_secret', require('crypto').randomBytes(16).toString('hex'));
   }
-  if (getSetting('ai_enabled') === null) {
-    setSetting('ai_enabled', '0');
-  }
-  if (getSetting('welcome_text') === null) {
-    setSetting('welcome_text', '👋 Salom! Xush kelibsiz. Quyidagi tugmalardan birini tanlang.');
-  }
-  if (getSetting('about_text') === null) {
-    setSetting('about_text', '🤖 Bu bot avtomatik javob beruvchi AI yordamchi. Savollaringizga tezkor javob beramiz.');
-  }
-  if (getSetting('webhook_secret') === null) {
-    setSetting('webhook_secret', require('crypto').randomBytes(16).toString('hex'));
-  }
+  // MTProto ilova credentiallari (my.telegram.org) - barcha foydalanuvchilar uchun umumiy
+  if (getSetting('tg_api_id') === null) setSetting('tg_api_id', '');
+  if (getSetting('tg_api_hash') === null) setSetting('tg_api_hash', '');
 }
 initDefaults();
 
