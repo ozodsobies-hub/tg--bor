@@ -10,6 +10,7 @@ const settingsRoutes = require('./routes/settings');
 const botControlRoutes = require('./routes/botControl');
 const aiKeysRoutes = require('./routes/aiKeys');
 const adminUsersRoutes = require('./routes/adminUsers');
+const connectRoutes = require('./routes/connect');
 
 const app = express();
 app.use(cors());
@@ -35,6 +36,8 @@ app.use('/api/settings', settingsRoutes);
 app.use('/api/bot', botControlRoutes);
 app.use('/api/ai-keys', aiKeysRoutes);
 app.use('/api/admin-users', adminUsersRoutes);
+// Ommaviy (JWT talab qilmaydigan) - faqat bir martalik token bilan himoyalangan akkount ulash
+app.use('/api/connect', connectRoutes);
 
 const PORT = process.env.PORT || 3000;
 app.listen(PORT, async () => {

@@ -22,9 +22,13 @@ function findRuleMatch(userId, text) {
 
 /**
  * Berilgan foydalanuvchi (users.id) uchun kelgan xabarga avto-javob generatsiya qiladi.
- * Tartib: 1) shu foydalanuvchining o'z qoidalari 2) AI (agar u yoqqan bo'lsa, o'z bilim bazasi bilan)
+ * Tartib: 1) shu foydalanuvchining o'z qoidalari (faqat oxirgi xabar bo'yicha)
+ *         2) AI (agar u yoqqan bo'lsa) - suhbat tarixi (history) va o'z bilim bazasi bilan
+ *
+ * history - [{role:'user'|'assistant', content}] - suhbatning oxirgi bir necha xabari,
+ *           oxirida shu kelgan xabarning o'zi bo'lishi kerak. Berilmasa, faqat 'text' ishlatiladi.
  */
-async function generateAutoReply(userId, text) {
+async function generateAutoReply(userId, text, history = null) {
   const ruleMatch = findRuleMatch(userId, text);
   if (ruleMatch) return ruleMatch;
 
@@ -34,7 +38,8 @@ async function generateAutoReply(userId, text) {
       .prepare('SELECT content FROM ai_knowledge WHERE user_id = ? ORDER BY id ASC')
       .all(userId)
       .map((k) => k.content);
-    const aiReply = await getAIReply(text, knowledge);
+    const finalHistory = history && history.length ? history : [{ role: 'user', content: text }];
+    const aiReply = await getAIReply(finalHistory, knowledge);
     if (aiReply) return aiReply;
   }
   return null;

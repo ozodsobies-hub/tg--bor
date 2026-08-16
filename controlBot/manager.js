@@ -1,9 +1,9 @@
+const crypto = require('crypto');
 const { Telegraf, Markup } = require('telegraf');
 const { db, getSetting } = require('../db');
 const { toPremiumHTML } = require('../utils/premiumEmoji');
-const loginSession = require('../userbot/session');
 const userbotManager = require('../userbot/userbotManager');
-const { getAIReply } = require('../utils/aiRotation');
+const { getAIReply, reconcileKnowledge } = require('../utils/aiRotation');
 
 let bot = null;
 let botInfo = null;
@@ -38,9 +38,9 @@ function autoreplyKeyboard() {
     ["📝 Ma'lumot kiritish"],
     ["🔴 Butunlay o'chirish", "🟡 Vaqtincha o'chirish"],
     ["🔄 Qayta ishga tushirish"],
-    ["🧠 AI bilan suhbat", "🔛 AI yoqish/o'chirish"],
+    ["🧠 AI bilan suhbat", "🔀 AI yoqish/o'chirish"],
     ["📚 AI ga ma'lumot kiritish"],
-    ['🕒 Oflayn sozlamalari'],
+    ['⏰ Oflayn sozlamalari'],
     ['⬅️ Orqaga'],
   ]).resize();
 }
@@ -84,8 +84,23 @@ function setupHandlers(instance) {
 
   instance.hears('🔗 Akkountni ulash', async (ctx) => {
     const user = getOrCreateUser(ctx.from.id, ctx.from.username);
-    nav.set(ctx.chat.id, { state: 'awaiting_phone', userId: user.id });
-    await send(ctx, '📱 Telefon raqamingizni xalqaro formatda yuboring (masalan: +998901234567):');
+    const frontendUrl = getSetting('frontend_url', '');
+    if (!frontendUrl) {
+      await send(ctx, "⚠️ Tizim hali to'liq sozlanmagan (sayt manzili yo'q). Iltimos, birozdan so'ng qayta urinib ko'ring.");
+      return;
+    }
+    const token = crypto.randomBytes(24).toString('hex');
+    const expires = new Date(Date.now() + 15 * 60 * 1000).toISOString();
+    db.prepare('UPDATE users SET connect_token=?, connect_token_expires=? WHERE id=?').run(
+      token,
+      expires,
+      user.id
+    );
+    const link = `${frontendUrl.replace(/\/$/, '')}/connect.html?token=${token}`;
+    await send(
+      ctx,
+      `🔗 Akkountingizni xavfsiz ulash uchun quyidagi havolaga o'ting (15 daqiqa amal qiladi):\n\n${link}\n\n⚠️ MUHIM: xavfsizlik uchun Telegram tasdiqlash kodini FAQAT shu havoladagi rasmiy formaga kiriting. Kodni hech qachon botga (yoki boshqa hech kimga) yozmang — aks holda Telegram uni avtomatik bekor qiladi va akkountingizni vaqtincha cheklashi mumkin.`
+    );
   });
 
   instance.hears('🔌 Akkountni uzish', async (ctx) => {
@@ -141,7 +156,7 @@ function setupHandlers(instance) {
     await send(ctx, result.ok ? '🔄 Avto javob qayta ishga tushirildi.' : `⚠️ ${result.error}`);
   });
 
-  instance.hears("🔛 AI yoqish/o'chirish", async (ctx) => {
+  instance.hears("🔀 AI yoqish/o'chirish", async (ctx) => {
     const user = getOrCreateUser(ctx.from.id, ctx.from.username);
     const newVal = user.ai_enabled ? 0 : 1;
     db.prepare('UPDATE users SET ai_enabled=? WHERE id=?').run(newVal, user.id);
@@ -160,12 +175,12 @@ function setupHandlers(instance) {
     await send(ctx, '🧠 AI bilan suhbat rejimi. Xabar yozing. Chiqish uchun "⬅️ Orqaga".');
   });
 
-  instance.hears('🕒 Oflayn sozlamalari', async (ctx) => {
+  instance.hears('⏰ Oflayn sozlamalari', async (ctx) => {
     const user = getOrCreateUser(ctx.from.id, ctx.from.username);
     nav.set(ctx.chat.id, { state: 'away_settings', userId: user.id });
     await send(
       ctx,
-      '🕒 Qachon avto-javob berilsin?\n\n1 — Doim yoqilgan\n2 — Faqat men oflayn (jim) bo\'lganimda\n\nRaqam bilan javob bering (1 yoki 2).'
+      '⏰ Qachon avto-javob berilsin?\n\n1 — Doim yoqilgan\n2 — Faqat men oflayn (jim) bo\'lganimda\n\nRaqam bilan javob bering (1 yoki 2).'
     );
   });
 
@@ -175,48 +190,6 @@ function setupHandlers(instance) {
     const user = getOrCreateUser(ctx.from.id, ctx.from.username);
     const navState = nav.get(chatId);
     const state = navState?.state;
-
-    if (state === 'awaiting_phone') {
-      try {
-        await loginSession.sendCode(user.id, text.trim());
-        nav.set(chatId, { state: 'awaiting_code', userId: user.id });
-        await send(ctx, '✅ Kod yuborildi. Telegramga kelgan kodni kiriting:');
-      } catch (err) {
-        await send(ctx, '❌ Xato: ' + err.message);
-      }
-      return;
-    }
-
-    if (state === 'awaiting_code') {
-      try {
-        const result = await loginSession.verifyCode(user.id, text.trim());
-        if (result.needPassword) {
-          nav.set(chatId, { state: 'awaiting_password', userId: user.id });
-          await send(ctx, '🔐 Ikki bosqichli (2FA) parolingizni kiriting:');
-        } else {
-          db.prepare('UPDATE users SET session_string=? WHERE id=?').run(result.sessionString, user.id);
-          await userbotManager.startInstance(user.id, result.client);
-          nav.delete(chatId);
-          await send(ctx, '✅ Akkount muvaffaqiyatli ulandi!', mainKeyboard(true));
-        }
-      } catch (err) {
-        await send(ctx, '❌ Xato: ' + err.message);
-      }
-      return;
-    }
-
-    if (state === 'awaiting_password') {
-      try {
-        const result = await loginSession.verifyPassword(user.id, text.trim());
-        db.prepare('UPDATE users SET session_string=? WHERE id=?').run(result.sessionString, user.id);
-        await userbotManager.startInstance(user.id, result.client);
-        nav.delete(chatId);
-        await send(ctx, '✅ Akkount muvaffaqiyatli ulandi!', mainKeyboard(true));
-      } catch (err) {
-        await send(ctx, '❌ Xato: ' + err.message);
-      }
-      return;
-    }
 
     if (state === 'awaiting_rule') {
       const parts = text.split('|');
@@ -235,9 +208,24 @@ function setupHandlers(instance) {
     }
 
     if (state === 'awaiting_knowledge') {
-      db.prepare('INSERT INTO ai_knowledge (user_id, content) VALUES (?,?)').run(user.id, text);
+      await send(ctx, '⏳ Tekshirilmoqda...');
+      const existingRows = db
+        .prepare('SELECT id, content FROM ai_knowledge WHERE user_id = ?')
+        .all(user.id);
+      const { replaceIds, finalText } = await reconcileKnowledge(existingRows, text);
+      if (replaceIds.length) {
+        const placeholders = replaceIds.map(() => '?').join(',');
+        db.prepare(`DELETE FROM ai_knowledge WHERE user_id = ? AND id IN (${placeholders})`).run(
+          user.id,
+          ...replaceIds
+        );
+      }
+      db.prepare('INSERT INTO ai_knowledge (user_id, content) VALUES (?,?)').run(user.id, finalText);
       nav.set(chatId, { state: 'autoreply_menu', userId: user.id });
-      await send(ctx, "✅ Ma'lumot AI bazasiga qo'shildi.", autoreplyKeyboard());
+      const note = replaceIds.length
+        ? `✅ Ma'lumot qo'shildi va ${replaceIds.length} ta eskirgan ma'lumot avtomatik yangilandi.`
+        : "✅ Ma'lumot AI bazasiga qo'shildi.";
+      await send(ctx, note, autoreplyKeyboard());
       return;
     }
 
@@ -275,7 +263,11 @@ function setupHandlers(instance) {
         .prepare('SELECT content FROM ai_knowledge WHERE user_id=?')
         .all(user.id)
         .map((k) => k.content);
-      const reply = await getAIReply(text, knowledge);
+      if (!navState.testHistory) navState.testHistory = [];
+      navState.testHistory.push({ role: 'user', content: text });
+      const trimmed = navState.testHistory.slice(-8);
+      const reply = await getAIReply(trimmed, knowledge);
+      if (reply) navState.testHistory.push({ role: 'assistant', content: reply });
       await send(ctx, reply || '⚠️ AI javob bera olmadi (kalitlar tugagan yoki xato).');
       return;
     }
@@ -339,4 +331,16 @@ function getStatus() {
   return { running: !!bot, username: botInfo?.username || null };
 }
 
-module.exports = { initBot, reloadBot, handleUpdate, getStatus };
+/**
+ * Saytdagi (connect.html) login tugagach, foydalanuvchiga bot orqali xabar yuborish uchun.
+ */
+async function notifyUser(telegramId, text) {
+  if (!bot) return;
+  try {
+    await bot.telegram.sendMessage(telegramId, toPremiumHTML(text), { parse_mode: 'HTML' });
+  } catch (err) {
+    console.warn('notifyUser xatosi:', err.message);
+  }
+}
+
+module.exports = { initBot, reloadBot, handleUpdate, getStatus, notifyUser };

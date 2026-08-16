@@ -45,13 +45,25 @@ function makeHandler(userDbId) {
     }
 
     try {
-      const replyText = await generateAutoReply(userDbId, text);
-      if (replyText) {
-        const { text: finalText, entities } = buildPremiumMessage(replyText);
-        await inst.client.sendMessage(message.senderId, {
-          message: finalText,
-          formattingEntities: entities,
+      // Suhbat tarixini o'qiymiz (AI kontekst uchun) - kelgan xabardan OLDINGI xabarlar
+      let history = [];
+      try {
+        const rawHistory = await inst.client.getMessages(message.senderId, {
+          limit: 8,
+          offsetId: message.id,
         });
+        history = rawHistory
+          .filter((m) => m.message)
+          .reverse()
+          .map((m) => ({ role: m.out ? 'assistant' : 'user', content: m.message }));
+      } catch (e) {
+        /* tarix o'qib bo'lmasa, faqat joriy xabar bilan davom etamiz */
+      }
+      history.push({ role: 'user', content: text });
+
+      const replyText = await generateAutoReply(userDbId, text, history);
+      if (replyText) {
+        await sendWithPremiumFallback(inst.client, message.senderId, replyText);
         if (senderId) lastReplyAt.set(cooldownKey, Date.now());
       }
     } catch (err) {
@@ -60,6 +72,26 @@ function makeHandler(userDbId) {
   };
 }
 
+/**
+ * Premium emoji entity bilan yuborishga urinadi. Agar akkountda Telegram Premium
+ * bo'lmagani sabab Telegram xato qaytarsa (masalan PREMIUM_ACCOUNT_REQUIRED yoki
+ * shunga o'xshash), entity'siz - oddiy matn sifatida qayta yuboradi, xabar
+ * baribir yetkazilishini kafolatlaydi.
+ */
+async function sendWithPremiumFallback(client, peer, text) {
+  const { text: finalText, entities } = buildPremiumMessage(text);
+  try {
+    await client.sendMessage(peer, { message: finalText, formattingEntities: entities });
+  } catch (err) {
+    const msg = (err.errorMessage || err.message || '').toUpperCase();
+    if (msg.includes('PREMIUM') || msg.includes('EMOJI')) {
+      console.warn('Premium emoji yuborilmadi (Premium kerak), oddiy matn bilan qayta yuborilmoqda.');
+      await client.sendMessage(peer, { message: finalText });
+    } else {
+      throw err;
+    }
+  }
+}
 /**
  * Berilgan foydalanuvchi uchun userbot instansiyasini ishga tushiradi.
  * existingClient berilsa (login jarayonidan keyin), qayta ulanmasdan shuni ishlatadi.

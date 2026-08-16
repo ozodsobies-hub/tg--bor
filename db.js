@@ -29,6 +29,8 @@ CREATE TABLE IF NOT EXISTS users (
   away_timeout_minutes INTEGER DEFAULT 5,
   autoreply_status TEXT DEFAULT 'on',    -- 'on' | 'off_temp' | 'off_permanent'
   ai_enabled INTEGER DEFAULT 0,
+  connect_token TEXT DEFAULT '',         -- akkount ulash uchun bir martalik token (saytda ishlatiladi)
+  connect_token_expires TEXT DEFAULT '',
   created_at TEXT DEFAULT CURRENT_TIMESTAMP
 );
 
@@ -64,6 +66,19 @@ CREATE TABLE IF NOT EXISTS ai_keys (
 );
 `);
 
+// Eski (v3'dan oldingi) bazalar uchun xavfsiz migratsiya - ustun allaqachon bo'lsa xato e'tiborga olinmaydi
+const migrations = [
+  "ALTER TABLE users ADD COLUMN connect_token TEXT DEFAULT ''",
+  "ALTER TABLE users ADD COLUMN connect_token_expires TEXT DEFAULT ''",
+];
+for (const m of migrations) {
+  try {
+    db.exec(m);
+  } catch (e) {
+    /* ustun allaqachon mavjud - e'tiborsiz qoldiramiz */
+  }
+}
+
 function getSetting(key, fallback = null) {
   const row = db.prepare('SELECT value FROM settings WHERE key = ?').get(key);
   return row ? row.value : fallback;
@@ -98,6 +113,8 @@ function initDefaults() {
   // MTProto ilova credentiallari (my.telegram.org) - barcha foydalanuvchilar uchun umumiy
   if (getSetting('tg_api_id') === null) setSetting('tg_api_id', '');
   if (getSetting('tg_api_hash') === null) setSetting('tg_api_hash', '');
+  // Bot havola generatsiya qilishi uchun sayt (frontend) manzili
+  if (getSetting('frontend_url') === null) setSetting('frontend_url', '');
 }
 initDefaults();
 

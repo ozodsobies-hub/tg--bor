@@ -22,7 +22,7 @@ router.get('/', authMiddleware, (req, res) => {
 });
 
 router.put('/', authMiddleware, (req, res) => {
-  const allowed = ['control_bot_token', 'tg_api_id', 'tg_api_hash'];
+  const allowed = ['control_bot_token', 'tg_api_id', 'tg_api_hash', 'frontend_url'];
   for (const key of allowed) {
     if (req.body[key] !== undefined && req.body[key] !== '') {
       setSetting(key, req.body[key]);
