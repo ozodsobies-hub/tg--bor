@@ -189,4 +189,48 @@ async function reconcileKnowledge(existingRows, newFact) {
   return { replaceIds: [], finalText: newFact };
 }
 
-module.exports = { getAIReply, reconcileKnowledge };
+/**
+ * Foydalanuvchi oddiy o'zbek tilida yozgan buyruqni (masalan "faqat men oflayn
+ * bo'lganimda javob yoz") aniq amalga (sozlama o'zgarishiga) aylantiradi.
+ * Qaytadi: {action:'set_away_mode'|'set_autoreply_status'|'set_ai_enabled'|'exclude_contact'|'unknown', ...}
+ */
+async function parseCommand(instructionText) {
+  const systemPrompt =
+    `Foydalanuvchi o'zining shaxsiy Telegram avto-javob botiga sozlama beryapti. ` +
+    `Uning gapini quyidagi amallardan FAQAT BIRIGA moslashtir va aynan shu formatda JSON qaytar:\n\n` +
+    `1) Faqat oflayn/band bo'lganda javob berish: {"action":"set_away_mode","value":"when_offline","minutes":N}\n` +
+    `   (agar daqiqa aytilmagan bo'lsa "minutes" maydonini qo'shma)\n` +
+    `2) Doim (onlayn bo'lsa ham) javob berish: {"action":"set_away_mode","value":"always"}\n` +
+    `3) Avto-javobni to'liq o'chirish: {"action":"set_autoreply_status","value":"off_permanent"}\n` +
+    `4) Avto-javobni vaqtincha o'chirish: {"action":"set_autoreply_status","value":"off_temp"}\n` +
+    `5) Avto-javobni yoqish/qayta ishga tushirish: {"action":"set_autoreply_status","value":"on"}\n` +
+    `6) AI'ni yoqish: {"action":"set_ai_enabled","value":true}\n` +
+    `7) AI'ni o'chirish: {"action":"set_ai_enabled","value":false}\n` +
+    `8) Muayyan kishiga (@username) javob berilmasin: {"action":"exclude_contact","username":"@..."}\n` +
+    `9) Hech biriga mos kelmasa yoki tushunarsiz bo'lsa: {"action":"unknown"}\n\n` +
+    `FAQAT JSON qaytar, hech qanday izoh yozma.`;
+
+  const keys = getOrderedActiveKeys();
+  for (const key of keys) {
+    try {
+      let raw = null;
+      if (key.provider === 'openrouter') {
+        raw = await callOpenRouterJSON(key.api_key, systemPrompt, instructionText);
+      } else if (key.provider === 'gemini') {
+        raw = await callGeminiJSON(key.api_key, systemPrompt, instructionText);
+      }
+      if (raw) {
+        const cleaned = raw.replace(/```json|```/g, '').trim();
+        const parsed = JSON.parse(cleaned);
+        resetFailure(key.id);
+        return parsed;
+      }
+    } catch (err) {
+      markFailure(key.id);
+      continue;
+    }
+  }
+  return { action: 'unknown' };
+}
+
+module.exports = { getAIReply, reconcileKnowledge, parseCommand };

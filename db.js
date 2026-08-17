@@ -31,6 +31,26 @@ CREATE TABLE IF NOT EXISTS users (
   ai_enabled INTEGER DEFAULT 0,
   connect_token TEXT DEFAULT '',         -- akkount ulash uchun bir martalik token (saytda ishlatiladi)
   connect_token_expires TEXT DEFAULT '',
+  first_message_text TEXT DEFAULT '',    -- kimdir birinchi marta yozganda yuboriladigan matn
+  subsequent_message_text TEXT DEFAULT '', -- AI o'chirilgan bo'lsa, keyingi xabarlarga yuboriladigan matn
+  created_at TEXT DEFAULT CURRENT_TIMESTAMP
+);
+
+-- Har bir foydalanuvchi uchun avval yozgan kishilar ro'yxati (1-xabar/keyingi xabar farqi uchun)
+CREATE TABLE IF NOT EXISTS contact_seen (
+  id INTEGER PRIMARY KEY AUTOINCREMENT,
+  user_id INTEGER NOT NULL REFERENCES users(id) ON DELETE CASCADE,
+  contact_tg_id TEXT NOT NULL,
+  created_at TEXT DEFAULT CURRENT_TIMESTAMP,
+  UNIQUE(user_id, contact_tg_id)
+);
+
+-- Har bir foydalanuvchi uchun avto-javob berilmasligi kerak bo'lgan kishilar ("do'stlar rejimi")
+CREATE TABLE IF NOT EXISTS excluded_contacts (
+  id INTEGER PRIMARY KEY AUTOINCREMENT,
+  user_id INTEGER NOT NULL REFERENCES users(id) ON DELETE CASCADE,
+  contact_ref TEXT NOT NULL,   -- @username yoki nom (ko'rsatish uchun)
+  contact_tg_id TEXT,          -- moslashtirish uchun raqamli Telegram ID
   created_at TEXT DEFAULT CURRENT_TIMESTAMP
 );
 
@@ -70,6 +90,8 @@ CREATE TABLE IF NOT EXISTS ai_keys (
 const migrations = [
   "ALTER TABLE users ADD COLUMN connect_token TEXT DEFAULT ''",
   "ALTER TABLE users ADD COLUMN connect_token_expires TEXT DEFAULT ''",
+  "ALTER TABLE users ADD COLUMN first_message_text TEXT DEFAULT ''",
+  "ALTER TABLE users ADD COLUMN subsequent_message_text TEXT DEFAULT ''",
 ];
 for (const m of migrations) {
   try {

@@ -38,30 +38,63 @@ function makeHandler(userDbId) {
     if (!text) return;
 
     const senderId = message.senderId?.toString();
+
+    // "Kimlarga javob berilmasin" ro'yxatini tekshiramiz
+    if (senderId) {
+      const excluded = db
+        .prepare('SELECT 1 FROM excluded_contacts WHERE user_id = ? AND contact_tg_id = ?')
+        .get(userDbId, senderId);
+      if (excluded) return;
+    }
+
     const cooldownKey = `${userDbId}:${senderId}`;
     if (senderId) {
       const last = lastReplyAt.get(cooldownKey) || 0;
       if (Date.now() - last < REPLY_COOLDOWN_MS) return;
     }
 
-    try {
-      // Suhbat tarixini o'qiymiz (AI kontekst uchun) - kelgan xabardan OLDINGI xabarlar
-      let history = [];
-      try {
-        const rawHistory = await inst.client.getMessages(message.senderId, {
-          limit: 8,
-          offsetId: message.id,
-        });
-        history = rawHistory
-          .filter((m) => m.message)
-          .reverse()
-          .map((m) => ({ role: m.out ? 'assistant' : 'user', content: m.message }));
-      } catch (e) {
-        /* tarix o'qib bo'lmasa, faqat joriy xabar bilan davom etamiz */
+    // Bu kishidan BIRINCHI marta xabar kelayaptimi, tekshiramiz
+    let isFirstMessage = false;
+    if (senderId) {
+      const seen = db
+        .prepare('SELECT 1 FROM contact_seen WHERE user_id = ? AND contact_tg_id = ?')
+        .get(userDbId, senderId);
+      if (!seen) {
+        isFirstMessage = true;
+        db.prepare(
+          'INSERT OR IGNORE INTO contact_seen (user_id, contact_tg_id) VALUES (?,?)'
+        ).run(userDbId, senderId);
       }
-      history.push({ role: 'user', content: text });
+    }
 
-      const replyText = await generateAutoReply(userDbId, text, history);
+    try {
+      let replyText = null;
+
+      if (isFirstMessage && user.first_message_text) {
+        // 1-xabar uchun maxsus sozlangan matn (qoida/AI ishlatilmaydi - deterministik)
+        replyText = user.first_message_text;
+      } else if (!isFirstMessage && !user.ai_enabled && user.subsequent_message_text) {
+        // AI o'chirilgan bo'lsa, keyingi xabarlarga sozlangan matn yuboriladi
+        replyText = user.subsequent_message_text;
+      } else {
+        // Odatdagi oqim: qoidalar, so'ng (AI yoqilgan bo'lsa) AI - suhbat konteksti bilan
+        let history = [];
+        try {
+          const rawHistory = await inst.client.getMessages(message.senderId, {
+            limit: 8,
+            offsetId: message.id,
+          });
+          history = rawHistory
+            .filter((m) => m.message)
+            .reverse()
+            .map((m) => ({ role: m.out ? 'assistant' : 'user', content: m.message }));
+        } catch (e) {
+          /* tarix o'qib bo'lmasa, faqat joriy xabar bilan davom etamiz */
+        }
+        history.push({ role: 'user', content: text });
+        replyText = await generateAutoReply(userDbId, text, history);
+      }
+
       if (replyText) {
         await sendWithPremiumFallback(inst.client, message.senderId, replyText);
         if (senderId) lastReplyAt.set(cooldownKey, Date.now());

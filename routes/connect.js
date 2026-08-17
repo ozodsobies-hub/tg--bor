@@ -81,10 +81,7 @@ async function notifyConnected(userId) {
     const controlBot = require('../controlBot/manager');
     const user = db.prepare('SELECT telegram_id FROM users WHERE id = ?').get(userId);
     if (user) {
-      await controlBot.notifyUser(
-        user.telegram_id,
-        "✅ Akkountingiz muvaffaqiyatli ulandi! Endi '⚙️ Avto javob boshqaruvi' orqali sozlashingiz mumkin."
-      );
+      await controlBot.notifyConnected(user.telegram_id);
     }
   } catch (e) {
     /* jim e'tiborsiz qoldiramiz - asosiy oqimga ta'sir qilmasin */

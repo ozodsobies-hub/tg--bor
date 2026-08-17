@@ -35,12 +35,20 @@ function mainKeyboard(connected) {
 
 function autoreplyKeyboard() {
   return Markup.keyboard([
-    ["📝 Ma'lumot kiritish"],
+    ["📝 Ma'lumot kiritish", '🚫 Kimlarga javob berilmasin'],
     ["🔴 Butunlay o'chirish", "🟡 Vaqtincha o'chirish"],
     ["🔄 Qayta ishga tushirish"],
     ["🧠 AI bilan suhbat", "🔀 AI yoqish/o'chirish"],
-    ["📚 AI ga ma'lumot kiritish"],
+    ["📚 AI ga ma'lumot kiritish", '🗣 Sozlamani yozib ayting'],
+    ['✉️ 1-xabar matni', '✉️ Keyingi xabar matni'],
     ['⏰ Oflayn sozlamalari'],
+    ['⬅️ Orqaga'],
+  ]).resize();
+}
+
+function excludeKeyboard() {
+  return Markup.keyboard([
+    ["➕ Kishi qo'shish", "📋 Ro'yxat"],
     ['⬅️ Orqaga'],
   ]).resize();
 }
@@ -58,9 +66,18 @@ function statusSummary(user) {
       : "🔴 Butunlay o'chirilgan";
   const awayText =
     user.away_mode === 'always' ? 'Doim yoqilgan' : `Faqat ${user.away_timeout_minutes} daqiqa jimlikdan keyin`;
-  return `⚙️ Avto javob boshqaruvi\n\nHolat: ${statusText}\nAI: ${
-    user.ai_enabled ? '🟢 Yoqilgan' : "🔴 O'chirilgan"
-  }\nOflayn rejimi: ${awayText}`;
+  return (
+    `⚙️ Avto javob boshqaruvi\n\n` +
+    `Holat: ${statusText}\n` +
+    `AI: ${user.ai_enabled ? '🟢 Yoqilgan' : "🔴 O'chirilgan"}\n` +
+    `Oflayn rejimi: ${awayText}\n` +
+    `1-xabar matni: ${user.first_message_text ? "✅ sozlangan" : "sozlanmagan (qoida/AI ishlaydi)"}\n` +
+    `Keyingi xabar matni (AI o'chirilganda): ${user.subsequent_message_text ? "✅ sozlangan" : "sozlanmagan"}\n\n` +
+    `ℹ️ Qanday ishlaydi:\n` +
+    `• Sizga kimdir BIRINCHI marta yozsa → "1-xabar matni" (agar sozlangan bo'lsa) yuboriladi.\n` +
+    `• Shu odam yana yozsa (keyingi xabarlar) → AI yoqilgan bo'lsa AI javob beradi (suhbat tarixini o'qib); AI o'chirilgan bo'lsa "Keyingi xabar matni" yuboriladi.\n` +
+    `• Bularning birortasi sozlanmagan bo'lsa, oddiy qoida (📝) yoki AI ishlatiladi.`
+  );
 }
 
 function setupHandlers(instance) {
@@ -180,7 +197,64 @@ function setupHandlers(instance) {
     nav.set(ctx.chat.id, { state: 'away_settings', userId: user.id });
     await send(
       ctx,
-      '⏰ Qachon avto-javob berilsin?\n\n1 — Doim yoqilgan\n2 — Faqat men oflayn (jim) bo\'lganimda\n\nRaqam bilan javob bering (1 yoki 2).'
+      '⏰ Qachon avto-javob berilsin?\n\n1 — Doim yoqilgan\n2 — Faqat men oflayn (jim) bo\'lganimda\n\nRaqam bilan javob bering (1 yoki 2).\n\nℹ️ Bu avtomatik ishlaydi: siz istalgan qurilmangizdan Telegram\'da yozsangiz, tizim buni "faollik" deb biladi. Belgilangan daqiqadan ko\'p jim tursangiz, "oflayn" hisoblanasiz — sizga hech qanday qo\'shimcha harakat kerak emas.'
+    );
+  });
+
+  instance.hears('🚫 Kimlarga javob berilmasin', async (ctx) => {
+    const user = getOrCreateUser(ctx.from.id, ctx.from.username);
+    const list = db.prepare('SELECT contact_ref FROM excluded_contacts WHERE user_id=?').all(user.id);
+    nav.set(ctx.chat.id, { state: 'exclude_menu', userId: user.id });
+    const text = list.length
+      ? `🚫 Hozir avto-javob berilmaydigan kishilar ("do'stlar rejimi"):\n${list
+          .map((r, i) => `${i + 1}. ${r.contact_ref}`)
+          .join('\n')}`
+      : "🚫 Hozircha hech kim istisno qilinmagan. Masalan, yaqin do'stlaringiz/oilangizga avto-javob yubormaslik uchun shu yerdan qo'shishingiz mumkin.";
+    await send(ctx, text, excludeKeyboard());
+  });
+
+  instance.hears("➕ Kishi qo'shish", async (ctx) => {
+    const user = getOrCreateUser(ctx.from.id, ctx.from.username);
+    nav.set(ctx.chat.id, { state: 'awaiting_exclude_contact', userId: user.id });
+    await send(ctx, "➕ Avto-javob berilmasligi kerak bo'lgan kishining @username'ini yuboring (masalan: @ali_valiyev):");
+  });
+
+  instance.hears("📋 Ro'yxat", async (ctx) => {
+    const user = getOrCreateUser(ctx.from.id, ctx.from.username);
+    const list = db.prepare('SELECT id, contact_ref FROM excluded_contacts WHERE user_id=?').all(user.id);
+    if (!list.length) {
+      await send(ctx, "📋 Ro'yxat hozircha bo'sh.", excludeKeyboard());
+      return;
+    }
+    nav.set(ctx.chat.id, { state: 'awaiting_exclude_removal', userId: user.id, excludeList: list });
+    const text = "🗑 O'chirmoqchi bo'lgan kishining raqamini yuboring:\n" + list.map((r, i) => `${i + 1}. ${r.contact_ref}`).join('\n');
+    await send(ctx, text);
+  });
+
+  instance.hears('🗣 Sozlamani yozib ayting', async (ctx) => {
+    const user = getOrCreateUser(ctx.from.id, ctx.from.username);
+    nav.set(ctx.chat.id, { state: 'awaiting_smart_command', userId: user.id });
+    await send(
+      ctx,
+      '🗣 Nima qilishni xohlaysiz — oddiy gapda yozing, AI o\'zi tushunib sozlaydi.\n\nMisollar:\n• "Faqat men oflayn bo\'lganimda javob yoz"\n• "Avto javobni vaqtincha o\'chir"\n• "AI ni yoq"\n• "@dostim ga javob berma"'
+    );
+  });
+
+  instance.hears('✉️ 1-xabar matni', async (ctx) => {
+    const user = getOrCreateUser(ctx.from.id, ctx.from.username);
+    nav.set(ctx.chat.id, { state: 'awaiting_first_message_text', userId: user.id });
+    await send(
+      ctx,
+      "✉️ Kimdir sizga BIRINCHI marta yozganda avtomatik yuboriladigan matnni kiriting.\n\nMisol: \"Salom! Hozir band bo'lishim mumkin, imkon qadar tezroq javob beraman 🙏\"\n\nO'chirish uchun \"-\" yuboring."
+    );
+  });
+
+  instance.hears('✉️ Keyingi xabar matni', async (ctx) => {
+    const user = getOrCreateUser(ctx.from.id, ctx.from.username);
+    nav.set(ctx.chat.id, { state: 'awaiting_subsequent_message_text', userId: user.id });
+    await send(
+      ctx,
+      "✉️ AI O'CHIRILGAN bo'lsa, shu odamning KEYINGI xabarlariga yuboriladigan matn.\n(AI yoqilgan bo'lsa, bu matn ishlatilmaydi - AI o'zi javob beradi.)\n\nMisol: \"Hali ham bandman, tez orada albatta javob beraman 🙏\"\n\nO'chirish uchun \"-\" yuboring."
     );
   });
 
@@ -255,6 +329,103 @@ function setupHandlers(instance) {
       );
       nav.set(chatId, { state: 'autoreply_menu', userId: user.id });
       await send(ctx, `✅ Saqlandi: ${minutes} daqiqa jimlikdan keyin oflayn hisoblanadi.`, autoreplyKeyboard());
+      return;
+    }
+
+    if (state === 'awaiting_exclude_contact') {
+      const username = text.trim();
+      const inst = userbotManager.instances.get(user.id);
+      if (!inst) {
+        await send(ctx, "❗ Avval akkountingiz ulangan va faol bo'lishi kerak.");
+        return;
+      }
+      try {
+        const entity = await inst.client.getEntity(username);
+        const tgId = entity.id?.toString();
+        db.prepare(
+          'INSERT INTO excluded_contacts (user_id, contact_ref, contact_tg_id) VALUES (?,?,?)'
+        ).run(user.id, username, tgId);
+        nav.set(chatId, { state: 'exclude_menu', userId: user.id });
+        await send(ctx, `✅ ${username} endi avto-javobdan istisno qilindi.`, excludeKeyboard());
+      } catch (err) {
+        await send(ctx, "❌ Bu foydalanuvchi topilmadi. @username to'g'ri ekanini tekshiring.");
+      }
+      return;
+    }
+
+    if (state === 'awaiting_exclude_removal') {
+      const idx = parseInt(text.trim(), 10) - 1;
+      const list = navState.excludeList || [];
+      if (isNaN(idx) || !list[idx]) {
+        await send(ctx, "❗ To'g'ri raqam kiriting.");
+        return;
+      }
+      db.prepare('DELETE FROM excluded_contacts WHERE id=?').run(list[idx].id);
+      nav.set(chatId, { state: 'exclude_menu', userId: user.id });
+      await send(ctx, `🗑 ${list[idx].contact_ref} ro'yxatdan o'chirildi.`, excludeKeyboard());
+      return;
+    }
+
+    if (state === 'awaiting_first_message_text') {
+      const value = text.trim() === '-' ? '' : text.trim();
+      db.prepare('UPDATE users SET first_message_text=? WHERE id=?').run(value, user.id);
+      nav.set(chatId, { state: 'autoreply_menu', userId: user.id });
+      await send(ctx, value ? "✅ 1-xabar matni saqlandi." : "✅ 1-xabar matni o'chirildi.", autoreplyKeyboard());
+      return;
+    }
+
+    if (state === 'awaiting_subsequent_message_text') {
+      const value = text.trim() === '-' ? '' : text.trim();
+      db.prepare('UPDATE users SET subsequent_message_text=? WHERE id=?').run(value, user.id);
+      nav.set(chatId, { state: 'autoreply_menu', userId: user.id });
+      await send(ctx, value ? "✅ Keyingi xabar matni saqlandi." : "✅ Keyingi xabar matni o'chirildi.", autoreplyKeyboard());
+      return;
+    }
+
+    if (state === 'awaiting_smart_command') {
+      await send(ctx, '⏳ Tahlil qilinmoqda...');
+      const { parseCommand } = require('../utils/aiRotation');
+      const cmd = await parseCommand(text);
+
+      if (cmd.action === 'set_away_mode') {
+        if (cmd.value === 'always') {
+          db.prepare("UPDATE users SET away_mode='always' WHERE id=?").run(user.id);
+          await send(ctx, '✅ Tushundim: endi doim avto-javob yoqilgan.', autoreplyKeyboard());
+        } else {
+          const minutes = cmd.minutes && cmd.minutes > 0 ? cmd.minutes : user.away_timeout_minutes;
+          db.prepare("UPDATE users SET away_mode='when_offline', away_timeout_minutes=? WHERE id=?").run(
+            minutes,
+            user.id
+          );
+          await send(ctx, `✅ Tushundim: faqat ${minutes} daqiqa jim tursangiz avto-javob ishlaydi.`, autoreplyKeyboard());
+        }
+      } else if (cmd.action === 'set_autoreply_status') {
+        db.prepare('UPDATE users SET autoreply_status=? WHERE id=?').run(cmd.value, user.id);
+        if (cmd.value === 'on') await userbotManager.reloadInstance(user.id);
+        else await userbotManager.stopInstance(user.id, false);
+        await send(ctx, '✅ Bajarildi.', autoreplyKeyboard());
+      } else if (cmd.action === 'set_ai_enabled') {
+        db.prepare('UPDATE users SET ai_enabled=? WHERE id=?').run(cmd.value ? 1 : 0, user.id);
+        await send(ctx, cmd.value ? '✅ AI yoqildi.' : "✅ AI o'chirildi.", autoreplyKeyboard());
+      } else if (cmd.action === 'exclude_contact' && cmd.username) {
+        const inst = userbotManager.instances.get(user.id);
+        try {
+          const entity = await inst.client.getEntity(cmd.username);
+          db.prepare(
+            'INSERT INTO excluded_contacts (user_id, contact_ref, contact_tg_id) VALUES (?,?,?)'
+          ).run(user.id, cmd.username, entity.id.toString());
+          await send(ctx, `✅ ${cmd.username} avto-javobdan istisno qilindi.`, autoreplyKeyboard());
+        } catch (e) {
+          await send(ctx, "❌ Bu foydalanuvchini topa olmadim, @username aniqroq yozing.");
+        }
+      } else {
+        await send(
+          ctx,
+          '🤔 Buni tushunolmadim. Iltimos aniqroq yozing, masalan:\n"Faqat men oflayn bo\'lganimda javob yoz"\n"Avto javobni butunlay o\'chir"\n"@ali ga javob berma"',
+          autoreplyKeyboard()
+        );
+      }
+      nav.set(chatId, { state: 'autoreply_menu', userId: user.id });
       return;
     }
 
@@ -334,6 +505,26 @@ function getStatus() {
 /**
  * Saytdagi (connect.html) login tugagach, foydalanuvchiga bot orqali xabar yuborish uchun.
  */
+/**
+ * Saytdagi (connect.html) login tugagach, foydalanuvchiga bot orqali xabar
+ * yuborish uchun - YANGI tugmalar (⚙️ Avto javob boshqaruvi) bilan birga.
+ * Aynan shu funksiya oldingi xatoni tuzatadi: ulanish tugagach tugma chiqmasligi muammosi.
+ */
+async function notifyConnected(telegramId) {
+  if (!bot) return;
+  try {
+    await bot.telegram.sendMessage(
+      telegramId,
+      toPremiumHTML(
+        "✅ Akkountingiz muvaffaqiyatli ulandi! Endi quyidagi tugmalar orqali sozlashingiz mumkin."
+      ),
+      { parse_mode: 'HTML', ...mainKeyboard(true) }
+    );
+  } catch (err) {
+    console.warn('notifyConnected xatosi:', err.message);
+  }
+}
+
 async function notifyUser(telegramId, text) {
   if (!bot) return;
   try {
@@ -343,4 +534,4 @@ async function notifyUser(telegramId, text) {
   }
 }
 
-module.exports = { initBot, reloadBot, handleUpdate, getStatus, notifyUser };
+module.exports = { initBot, reloadBot, handleUpdate, getStatus, notifyUser, notifyConnected };
